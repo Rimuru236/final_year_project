@@ -31,6 +31,7 @@ from typing import Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, EmailStr
 
 from ..core.database import (
@@ -275,10 +276,10 @@ async def change_password(
         )
 
     user = await _get_user(current["user_id"])
-    if not verify_password(body.current_password, user["password_hash"]):
+    if not await run_in_threadpool(verify_password, body.current_password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    new_hash = hash_password(body.new_password)
+    new_hash = await run_in_threadpool(hash_password, body.new_password)
     await users_col().update_one(
         {"_id": ObjectId(current["user_id"])},
         {"$set": {"password_hash": new_hash}},
@@ -460,7 +461,7 @@ async def change_email(
     
     # Verify current password
     user = await _get_user(uid)
-    if not verify_password(body.current_password, user["password_hash"]):
+    if not await run_in_threadpool(verify_password, body.current_password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
     
     # Normalize new email

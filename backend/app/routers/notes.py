@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi.concurrency import run_in_threadpool
 
 from ..core.database import notes_col, note_sections_col
 from ..core.security import get_current_user
@@ -176,9 +177,12 @@ async def upload_note(
         )
  
     if ext == "pdf":
-        raw_text = extract_text_from_pdf(data)
+        # PyMuPDF parsing is synchronous CPU/IO work — offload it so a large
+        # upload doesn't stall the event loop (and every other user) for the
+        # duration of the parse.
+        raw_text = await run_in_threadpool(extract_text_from_pdf, data)
     elif ext == "docx":
-        raw_text = extract_text_from_docx(data)
+        raw_text = await run_in_threadpool(extract_text_from_docx, data)
     else:
         raw_text = data.decode("utf-8", errors="replace")
  

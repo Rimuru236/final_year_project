@@ -16,33 +16,39 @@ async def check_rate_limit(scope: str, key: str, max_attempts: int, window_minut
     restarts, and is scoped per real identity (email/user_id) rather than
     per-process like an in-memory limiter would be.
 
+    Each attempt is its own document (scope, key, at) rather than one
+    growing-array document per key. That avoids two problems the old
+    read-array/append/rewrite-array approach had under concurrent load:
+      1. Lost updates — two concurrent requests both read the same array,
+         both append in memory, and whichever writes last clobbers the
+         other's recorded attempt, undercounting real attempts.
+      2. Unbounded growth / hot-document contention — every attempt against
+         a given key serialized through read-modify-write on one document,
+         and old entries were only pruned on the next read of that same key.
+    A TTL index (see database.create_indexes) auto-expires attempt documents
+    once they're out of any window that would reference them, so no manual
+    cleanup pass is needed.
+
     Call this BEFORE doing the sensitive check (password/TOTP verification).
     Returns True if the action is allowed (and records this attempt).
     Returns False if the limit has been exceeded (does NOT record the
-    rejected attempt itself, but still prunes stale entries).
+    rejected attempt itself).
     """
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=window_minutes)
-    doc_id = f"{scope}:{key}"
 
-    doc = await _rate_limits_col().find_one({"_id": doc_id})
-    raw_attempts = doc.get("attempts", []) if doc else []
-    # Motor/PyMongo returns naive UTC datetimes on read (BSON dates carry no
-    # timezone) — normalize before comparing against the timezone-aware `now`.
-    attempts = [
-        (a if a.tzinfo else a.replace(tzinfo=timezone.utc))
-        for a in raw_attempts
-        if (a if a.tzinfo else a.replace(tzinfo=timezone.utc)) > window_start
-    ]
-
-    if len(attempts) >= max_attempts:
-        await _rate_limits_col().update_one(
-            {"_id": doc_id}, {"$set": {"attempts": attempts}}, upsert=True,
-        )
+    count = await _rate_limits_col().count_documents(
+        {"scope": scope, "key": key, "at": {"$gte": window_start}}
+    )
+    if count >= max_attempts:
         return False
 
-    attempts.append(now)
-    await _rate_limits_col().update_one(
-        {"_id": doc_id}, {"$set": {"attempts": attempts}}, upsert=True,
-    )
+    await _rate_limits_col().insert_one({
+        "scope": scope,
+        "key": key,
+        "at": now,
+        # Slack past the window so the TTL sweep never removes a document
+        # before a still-in-window count_documents() call could need it.
+        "expires_at": now + timedelta(minutes=window_minutes * 2),
+    })
     return True

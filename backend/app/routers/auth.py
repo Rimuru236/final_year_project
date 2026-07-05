@@ -3,6 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Response, Cookie, status, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from bson import ObjectId
 from typing import Optional
 
@@ -98,10 +99,14 @@ async def signup(body: SignupRequest, response: Response, request: Request):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # bcrypt is a synchronous CPU-bound call — offload it so it doesn't block
+    # the event loop (and every other in-flight request) for ~200-300ms.
+    password_hash = await run_in_threadpool(hash_password, body.password)
+
     doc = {
         "name":          body.name.strip(),
         "email":         normalised_email,
-        "password_hash": hash_password(body.password),
+        "password_hash": password_hash,
         "level":         body.level,
         "created_at":    datetime.now(timezone.utc),
     }
@@ -141,7 +146,7 @@ async def login(body: LoginRequest, response: Response, request: Request):
         )
 
     user = await col.find_one({"email": normalised_email})
-    if not user or not verify_password(body.password, user["password_hash"]):
+    if not user or not await run_in_threadpool(verify_password, body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     user_id = str(user["_id"])

@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     # MongoDB
     mongodb_url: str = "mongodb://localhost:27017"
     database_name: str = "studymind"
+    # Per-worker connection cap. With WEB_CONCURRENCY workers each opening
+    # their own pool, total connections to Mongo = mongo_max_pool_size *
+    # worker_count — keep this conservative on shared/free-tier clusters
+    # with a low total connection ceiling.
+    mongo_max_pool_size: int = 20
 
     # JWT
     secret_key: str = UNSAFE_DEFAULT_KEY

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from groq import Groq
+from groq import AsyncGroq
 from app.core.config import settings
 from typing import List
 import logging
@@ -9,8 +9,10 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-# Initialize Groq client
-client = Groq(api_key=settings.groq_api_key)
+# Async client — a sync Groq() client's .create() call would block the
+# single asyncio event loop for the full 1-4s round trip, stalling every
+# other in-flight request on this process.
+client = AsyncGroq(api_key=settings.groq_api_key)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -63,7 +65,7 @@ async def chat(req: ChatRequest):
         logger.info(f"Sending {len(messages)} messages to Groq")
 
         # Call Groq
-        completion = client.chat.completions.create(
+        completion = await client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
             temperature=0.7,

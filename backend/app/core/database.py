@@ -54,7 +54,9 @@ _client: AsyncIOMotorClient | None = None
 def get_client() -> AsyncIOMotorClient:
     global _client
     if _client is None:
-        _client = AsyncIOMotorClient(settings.mongodb_url)
+        _client = AsyncIOMotorClient(
+            settings.mongodb_url, maxPoolSize=settings.mongo_max_pool_size
+        )
     return _client
 
 
@@ -143,6 +145,17 @@ async def create_indexes() -> None:
     await notes_col().create_index(
         [("user_id", 1), ("created_at", -1)],
         name="notes_user_created",
+    )
+
+    # rate_limits: one document per attempt (see services/rate_limit.py).
+    # Compound index backs the count_documents() window query; TTL index
+    # auto-expires attempt docs so nothing needs a manual cleanup job.
+    await get_db()["rate_limits"].create_index(
+        [("scope", 1), ("key", 1), ("at", -1)],
+        name="rate_limits_scope_key_at",
+    )
+    await get_db()["rate_limits"].create_index(
+        "expires_at", expireAfterSeconds=0, name="rate_limits_ttl",
     )
 
     logger.info("[DB] MongoDB indexes ensured.")
