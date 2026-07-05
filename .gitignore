@@ -35,3 +35,7 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# ── Markdown docs — keep only README.md tracked, not internal/scratch notes ──
+*.md
+!README.md
