@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Material You Design Tokens ─────────────────────────────────────────────
+   These CSS custom properties power the Tailwind color extensions defined
+   in tailwind.config.js.  All values are HSL triplets (no hsl() wrapper)
+   so Tailwind's alpha-modifier syntax works: bg-primary/20
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Primary — Indigo 600 */
+  --color-primary: 231 70% 50%;
+  --color-primary-dim: 231 70% 44%;
+  --color-on-primary: 0 0% 100%;
+  --color-primary-container: 231 100% 94%;
+  --color-on-primary-container: 231 70% 22%;
+
+  /* Secondary — Violet */
+  --color-secondary: 263 58% 53%;
+  --color-on-secondary: 0 0% 100%;
+  --color-secondary-container: 263 100% 94%;
+  --color-on-secondary-container: 263 58% 20%;
+
+  /* Tertiary — Teal */
+  --color-tertiary: 174 58% 39%;
+  --color-on-tertiary: 0 0% 100%;
+  --color-tertiary-container: 174 100% 90%;
+  --color-on-tertiary-container: 174 58% 15%;
+
+  /* Background & Surface */
+  --color-background: 230 33% 98%;
+  --color-on-background: 231 25% 14%;
+  --color-surface: 230 33% 98%;
+  --color-on-surface: 231 25% 14%;
+  --color-on-surface-variant: 231 12% 42%;
+
+  /* Surface containers (elevation tiers) */
+  --color-surface-container-lowest: 0 0% 100%;
+  --color-surface-container-low: 230 33% 97%;
+  --color-surface-container: 230 28% 94%;
+  --color-surface-container-high: 230 22% 90%;
+
+  /* Outline */
+  --color-outline: 231 10% 62%;
+  --color-outline-variant: 231 22% 88%;
+}
+
+
+/* ── Dark theme tokens ───────────────────────────────────────────────────────
+   Applied when <html class="dark"> is set by the useTheme hook.
+   Parallel HSL values for every token defined under :root — same names,
+   dark-surface-tuned values.  No new token names introduced.
+   ─────────────────────────────────────────────────────────────────────────── */
+.dark {
+  /* Primary — lighter indigo for dark surfaces */
+  --color-primary: 231 80% 70%;
+  --color-primary-dim: 231 80% 62%;
+  --color-on-primary: 231 50% 12%;
+  --color-primary-container: 231 50% 22%;
+  --color-on-primary-container: 231 80% 88%;
+
+  /* Secondary — lighter violet */
+  --color-secondary: 263 70% 72%;
+  --color-on-secondary: 263 40% 12%;
+  --color-secondary-container: 263 40% 22%;
+  --color-on-secondary-container: 263 70% 88%;
+
+  /* Tertiary — lighter teal */
+  --color-tertiary: 174 60% 55%;
+  --color-on-tertiary: 174 40% 10%;
+  --color-tertiary-container: 174 40% 18%;
+  --color-on-tertiary-container: 174 60% 88%;
+
+  /* Background & Surface */
+  --color-background: 231 18% 10%;
+  --color-on-background: 231 25% 92%;
+  --color-surface: 231 18% 10%;
+  --color-on-surface: 231 25% 92%;
+  --color-on-surface-variant: 231 12% 65%;
+
+  /* Surface containers (elevation tiers — progressively lighter) */
+  --color-surface-container-lowest: 231 18% 8%;
+  --color-surface-container-low: 231 16% 12%;
+  --color-surface-container: 231 14% 16%;
+  --color-surface-container-high: 231 12% 22%;
+
+  /* Outline */
+  --color-outline: 231 10% 45%;
+  --color-outline-variant: 231 14% 28%;
+}
+
+/* ── Base resets ─────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* D9: prevent horizontal scroll on all viewports */
+  overflow-x: hidden;
+}
+
+body {
+  @apply bg-background text-on-surface font-sans;
+  margin: 0;
+  min-height: 100vh;
+  /* D9: prevent content overflow on narrow viewports */
+  overflow-x: hidden;
+  word-break: break-word;
+}
+
+/* ── Animate-in utility (Tailwind v3 doesn't ship this by default) ────────── */
+@layer utilities {
+  .animate-in {
+    animation-fill-mode: both;
+  }
+  .fade-in {
+    animation-name: fadeIn;
+    animation-duration: 0.2s;
+  }
+  .slide-in-from-right-4 {
+    animation-name: slideInRight;
+    animation-duration: 0.3s;
+  }
+  .duration-300 {
+    animation-duration: 0.3s;
+  }
+  .duration-200 {
+    animation-duration: 0.2s;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(1rem); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Scrollbar styling ───────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--color-outline-variant)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--color-outline)); }
