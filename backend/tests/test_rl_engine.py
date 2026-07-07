@@ -45,6 +45,32 @@ def test_reward_mid_and_low_bands_unaffected_by_timing():
     assert _reward(40, avg_response_time_pct=99) == -1.0
 
 
+def test_reward_high_score_low_confidence_is_capped():
+    # A high score paired with low self-reported confidence looks like a
+    # lucky guess, not mastery — response time alone can't catch a fast
+    # lucky guess, so confidence is a separate signal that should also cap
+    # the reward instead of granting full credit.
+    assert _reward(90, avg_confidence_pct=20) == 0.0
+    assert _reward(90, avg_confidence_pct=39.9) == 0.0
+
+
+def test_reward_high_score_high_confidence_gets_full_reward():
+    assert _reward(90, avg_confidence_pct=80) == 1.0
+    assert _reward(90, avg_confidence_pct=40) == 1.0  # exactly at threshold — not capped
+
+
+def test_reward_mid_and_low_bands_unaffected_by_confidence():
+    assert _reward(70, avg_confidence_pct=10) == 0.0
+    assert _reward(40, avg_confidence_pct=10) == -1.0
+
+
+def test_reward_slow_but_confident_is_still_capped():
+    # Timing and confidence are independent signals — either one alone is
+    # enough to cap the reward; a slow response caps even with high
+    # confidence reported.
+    assert _reward(90, avg_response_time_pct=90, avg_confidence_pct=95) == 0.0
+
+
 def test_apply_action_respects_floor_and_ceiling():
     assert apply_action(0.1, "decrease") >= 0.25  # MIN_SLOT_HOURS floor
     assert apply_action(7.0, "increase") <= 8.0    # MAX_SLOT_HOURS ceiling

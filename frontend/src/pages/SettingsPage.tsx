@@ -365,6 +365,7 @@ export function SettingsPage() {
     { id: "password_changed",   label: "Password Changes",      description: "Notification when your password is updated" },
     { id: "day_sections_ready", label: "Study Reminders",       description: "When your daily study sections are ready" },
     { id: "weekly_digest",      label: "Weekly Digest",         description: "Summary of your progress every week" },
+    { id: "revision_due",       label: "Revision Reminders",    description: "When mastered content is aging and due for a review before it's archived" },
   ];
 
   return (

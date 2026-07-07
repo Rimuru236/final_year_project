@@ -105,7 +105,18 @@ export interface StudySession {
   // Per-question elapsed/allotted-time fractions, only recorded when the
   // quiz timer was enabled — used to compute avg_response_time_pct on submit.
   responseTimeFractions: number[];
+  // Per-question self-reported confidence (0-1, higher = more confident),
+  // recorded when the student picks a confidence level before submitting —
+  // used to compute avg_confidence_pct on submit.
+  confidenceRatings: number[];
 }
+
+// Confidence levels shown in the quiz UI, mapped to a 0-1 scale.
+export const CONFIDENCE_LEVELS = [
+  { value: 0.0, label: "Guessing" },
+  { value: 0.5, label: "Somewhat Sure" },
+  { value: 1.0, label: "Confident" },
+] as const;
 
 // ── App Routing ───────────────────────────────────────────────────────────────
 export type Page =
@@ -254,6 +265,15 @@ export interface SectionMastery {
   hours_allocated: number;
 }
 
+// Pacing forecast for a student-set mastery goal on a timetable.
+export interface GoalForecast {
+  target_mastery_pct: number;
+  deadline: string;  // ISO date (YYYY-MM-DD)
+  days_remaining: number;
+  projected_mastery_pct: number | null;
+  status: "goal_met" | "deadline_passed" | "not_enough_data" | "on_track" | "behind";
+}
+
 export interface MasteryReport {
   timetable_id: string;
   solid: SectionMastery[];
@@ -266,6 +286,8 @@ export interface MasteryReport {
   sections_by_day: Record<string, string[]>;
   // Solid sections not attempted in a while — subset of `solid`, not exclusive
   due_for_review: SectionMastery[];
+  // Pacing forecast — null when no goal has been set on this timetable.
+  goal: GoalForecast | null;
 }
 
 // ── Glossary (Feature 3) ─────────────────────────────────────────────────────

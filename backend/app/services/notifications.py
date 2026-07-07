@@ -20,6 +20,7 @@ Events dispatched (event name → human subject):
   "day_sections_ready"  → "Your [day] study sections are ready"
   "weekly_digest"       → "Your weekly study summary"  (Day 6+ can trigger this)
   "streak_reminder"     → "Keep your [N]-day streak alive!" (services/streaks.py)
+  "revision_due"        → "Time to revisit [subject/filename]" (services/lifecycle.py)
 """
 
 from __future__ import annotations
@@ -280,6 +281,43 @@ def _build_message(event: str, payload: dict) -> tuple[str, str, str] | None:
         """)
         return subject, plain, html
 
+    if event == "revision_due":
+        label = payload.get("subject") or payload.get("filename") or "a note"
+        best_score = payload.get("best_score", 0)
+        subject = f"Time to revisit {label} 🔁"
+        plain = dedent(f"""\
+            Hi {name},
+
+            You scored {best_score:.0f}% on {label} a while ago, but haven't
+            revisited it recently. A quick review session now will keep it
+            fresh — otherwise it'll be archived in a week to free up space.
+
+            — The Cognitive Sanctuary team
+        """)
+        html = _render_html_wrapper(subject, f"""
+            <h2 style="color:#1e1b4b;font-size:20px;font-weight:700;margin:0 0 12px;">
+              🔁 Time to revisit {label}
+            </h2>
+            <p style="color:#4b5563;line-height:1.7;margin:0 0 16px;">
+              You scored <strong>{best_score:.0f}%</strong> on this material, but it's been
+              a while since your last review. A quick refresh now keeps it solid.
+            </p>
+            <div style="background:#ede9fe;border-radius:12px;padding:16px;margin:0 0 20px;">
+              <p style="color:#4456ba;margin:0;font-size:13px;">
+                If it isn't revisited soon, this note will be archived to free up space —
+                studying it again resets the clock.
+              </p>
+            </div>
+            <div style="text-align:center;margin:24px 0;">
+              <a href="#" style="background:#4456ba;color:#fff;text-decoration:none;
+                                 padding:14px 32px;border-radius:50px;font-weight:700;
+                                 font-size:14px;display:inline-block;">
+                Review Now →
+              </a>
+            </div>
+        """)
+        return subject, plain, html
+
     logger.warning("[Notify] Unknown event '%s' — no template defined", event)
     return None
 
@@ -344,6 +382,7 @@ async def notify_user(user_id: str, event: str, payload: dict) -> None:
       "day_sections_ready" payload: {"timetable_id": str, "day_name": str}
       "weekly_digest"      payload: {"name": str, "overall_score": float, "total_attempts": int}
       "streak_reminder"    payload: {"current_streak": int}
+      "revision_due"       payload: {"note_id": str, "best_score": float, "subject": str|None, "filename": str|None}
     """
     try:
         await _notify_user_inner(user_id, event, payload)

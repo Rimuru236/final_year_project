@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from ..core.database import timetables_col, note_sections_col, progress_col, q_table_col, notes_col, users_col
 from ..core.security import get_current_user
-from ..schemas import TimetableGenerateRequest, TimetableResponse, TimetableSlot
+from ..schemas import TimetableGenerateRequest, TimetableResponse, TimetableSlot, StudyGoalRequest
 from ..services.rl_engine import apply_action
 
 logger = logging.getLogger(__name__)
@@ -18,14 +18,39 @@ START_HOUR = 9
 MIN_SLOT_HOURS = 0.25  # 15 mins
 MAX_SECTION_WORDS = 2000
 
+# D4 follow-up: maps onboarding.py's VALID_TIMES labels to a schedule start
+# hour. Mirrors the hour ranges shown in OnboardingPage.tsx's STUDY_TIME_LABELS
+# (early_morning "5-8am", morning "8am-12pm", afternoon "12-5pm",
+# evening "5-9pm", night "9pm-12am").
+TIME_OF_DAY_START_HOUR = {
+    "early_morning": 5,
+    "morning": 8,
+    "afternoon": 12,
+    "evening": 17,
+    "night": 21,
+}
+
+
+def _resolve_start_hour(preferred_study_times: list[str] | None) -> int:
+    """
+    Anchor the day's schedule to the earliest of the user's preferred study
+    times, so a user who only selects "evening" gets sections starting at
+    5pm instead of the 9am default. None/empty/all-invalid -> unchanged
+    default behavior (START_HOUR).
+    """
+    if not preferred_study_times:
+        return START_HOUR
+    hours = [TIME_OF_DAY_START_HOUR[t] for t in preferred_study_times if t in TIME_OF_DAY_START_HOUR]
+    return min(hours) if hours else START_HOUR
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _time_str(hour_offset: float) -> str:
+def _time_str(hour_offset: float, start_hour: int = START_HOUR) -> str:
     total_mins = int(hour_offset * 60)
-    h = START_HOUR + total_mins // 60
+    h = start_hour + total_mins // 60
     m = total_mins % 60
     h = min(h, 23)
     return f"{h:02d}:{m:02d}"
@@ -85,6 +110,7 @@ def _distribute_sections(
     weekday_free_hours: dict | None = None,
     blocked_days: list | None = None,
     break_ratio_override: float | None = None,
+    preferred_study_times: list[str] | None = None,
 ) -> dict[str, list]:
     """
     Distribute note sections across study days.
@@ -101,7 +127,10 @@ def _distribute_sections(
     - blocked_days: days omitted entirely from the schedule.
     - weekday_free_hours: per-day hour cap; day_budget capped to free_hours[day].
     - break_ratio_override: user-preferred break ratio replaces the global default.
+    - preferred_study_times: anchors each day's start time to the earliest
+      selected time-of-day block instead of the fixed 9am default.
     """
+    start_hour = _resolve_start_hour(preferred_study_times)
     if not sections:
         logger.warning("[Timetable] No sections to distribute")
         return {d: [] for d in DAYS[:study_days]}
@@ -183,8 +212,8 @@ def _distribute_sections(
                 # Full content — smart truncation only happens inside MCQ generation
                 section_content=sec.get("content", ""),
                 hours_allocated=alloc,
-                start_time=_time_str(start_offset),
-                end_time=_time_str(end_offset),
+                start_time=_time_str(start_offset, start_hour),
+                end_time=_time_str(end_offset, start_hour),
                 break_minutes=break_mins,
             )
         )
@@ -248,13 +277,14 @@ async def generate_timetable(
     # D4: Load per-user schedule constraints; fall back to defaults if unset.
     from bson import ObjectId as _ObjId
     user_doc = await users_col().find_one({"_id": _ObjId(current["user_id"])})
-    weekday_free_hours = user_doc.get("weekday_free_hours") if user_doc else None
-    blocked_days       = user_doc.get("blocked_days")       if user_doc else None
-    break_ratio_ovr    = user_doc.get("default_break_ratio") if user_doc else None
+    weekday_free_hours    = user_doc.get("weekday_free_hours") if user_doc else None
+    blocked_days          = user_doc.get("blocked_days")       if user_doc else None
+    break_ratio_ovr       = user_doc.get("default_break_ratio") if user_doc else None
+    preferred_study_times = user_doc.get("preferred_study_times") if user_doc else None
 
     logger.info(
-        "[Timetable] D4 constraints: blocked=%s free_hours=%s",
-        blocked_days, weekday_free_hours,
+        "[Timetable] D4 constraints: blocked=%s free_hours=%s preferred_times=%s",
+        blocked_days, weekday_free_hours, preferred_study_times,
     )
 
     days_schedule = _distribute_sections(
@@ -265,6 +295,7 @@ async def generate_timetable(
         weekday_free_hours=weekday_free_hours,
         blocked_days=blocked_days,
         break_ratio_override=break_ratio_ovr,
+        preferred_study_times=preferred_study_times,
     )
 
     # Fill unused days with empty schedules (including blocked days)
@@ -334,6 +365,47 @@ async def get_timetable(
     )
 
 
+@router.put("/{timetable_id}/goal")
+async def set_goal(
+    timetable_id: str,
+    body: StudyGoalRequest,
+    current: dict = Depends(get_current_user),
+):
+    """
+    Set (or replace) a mastery-target pacing goal on this timetable.
+    Progress toward it is computed against week_start as the tracking-start
+    reference — see services/goal_forecast.py and progress.section_mastery().
+    """
+    doc = await timetables_col().find_one({"_id": timetable_id, "user_id": current["user_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Timetable not found")
+
+    await timetables_col().update_one(
+        {"_id": timetable_id},
+        {"$set": {
+            "goal_mastery_pct": body.target_mastery_pct,
+            "goal_deadline": body.deadline.isoformat(),
+        }},
+    )
+    return {"message": "Goal saved"}
+
+
+@router.delete("/{timetable_id}/goal")
+async def clear_goal(
+    timetable_id: str,
+    current: dict = Depends(get_current_user),
+):
+    doc = await timetables_col().find_one({"_id": timetable_id, "user_id": current["user_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Timetable not found")
+
+    await timetables_col().update_one(
+        {"_id": timetable_id},
+        {"$unset": {"goal_mastery_pct": "", "goal_deadline": ""}},
+    )
+    return {"message": "Goal cleared"}
+
+
 @router.get("/", response_model=list[TimetableResponse])
 async def list_timetables(
     current: dict = Depends(get_current_user),
@@ -382,7 +454,7 @@ async def list_timetables(
 # Day Reallocation helpers (D3)
 # ---------------------------------------------------------------------------
 
-def _recompute_day_times(slots: list[dict]) -> list[dict]:
+def _recompute_day_times(slots: list[dict], start_hour: int = START_HOUR) -> list[dict]:
     """
     Recompute start_time / end_time for every slot in a day after slots have
     been moved or hours have been changed.  Mirrors the T5 fix already used
@@ -395,8 +467,8 @@ def _recompute_day_times(slots: list[dict]) -> list[dict]:
         alloc = slot["hours_allocated"]
         recomputed.append({
             **slot,
-            "start_time": _time_str(offset),
-            "end_time":   _time_str(offset + alloc),
+            "start_time": _time_str(offset, start_hour),
+            "end_time":   _time_str(offset + alloc, start_hour),
         })
         offset += alloc + alloc * break_ratio
     return recomputed
@@ -425,6 +497,7 @@ def _swap_one_pair(
     best_day: str,
     scored_days: dict[str, float],
     reassignment_log: list[str],
+    start_hour: int = START_HOUR,
 ) -> dict[str, list]:
     """
     Swap sections between exactly one worst/best day pair, stamping "moved_from"
@@ -447,8 +520,8 @@ def _swap_one_pair(
         {**s, "moved_from": best_day} for s in new_days[best_day]
     ]
 
-    new_days[worst_day] = _recompute_day_times(best_slots_stamped)
-    new_days[best_day]  = _recompute_day_times(worst_slots_stamped)
+    new_days[worst_day] = _recompute_day_times(best_slots_stamped, start_hour)
+    new_days[best_day]  = _recompute_day_times(worst_slots_stamped, start_hour)
 
     # Log to reassignment_log (visible in the weekly report)
     reassignment_log.append(
@@ -492,6 +565,7 @@ def _swap_days(
     latest_progress: dict,
     reassignment_log: list[str],
     swap_breadth: int = 1,
+    start_hour: int = START_HOUR,
 ) -> dict[str, list]:
     """
     D3 core: swap sections between the worst-performing and best-performing
@@ -536,7 +610,7 @@ def _swap_days(
 
     new_days = dict(days)
     for worst_day, best_day in pairs:
-        new_days = _swap_one_pair(new_days, worst_day, best_day, scored_days, reassignment_log)
+        new_days = _swap_one_pair(new_days, worst_day, best_day, scored_days, reassignment_log, start_hour)
 
     return new_days
 
@@ -600,6 +674,12 @@ async def adapt_timetable(
     q_by_section: dict = {d["section_id"]: d["q_values"] for d in q_docs}
     default_q = {a: 0.0 for a in ["increase", "keep", "decrease"]}
 
+    # D4 follow-up: keep the user's preferred start-of-day anchored across
+    # adapts too, not just initial generation.
+    from bson import ObjectId as _ObjId
+    user_doc = await users_col().find_one({"_id": _ObjId(user_id)})
+    start_hour = _resolve_start_hour(user_doc.get("preferred_study_times") if user_doc else None)
+
     # ── Step 1: Hour rescaling (existing logic, unchanged) ───────────────────
     new_days: dict[str, list] = {}
 
@@ -625,8 +705,8 @@ async def adapt_timetable(
                 updated_slot.setdefault("section_content", "")
 
             alloc = updated_slot["hours_allocated"]
-            updated_slot["start_time"] = _time_str(day_offset)
-            updated_slot["end_time"]   = _time_str(day_offset + alloc)
+            updated_slot["start_time"] = _time_str(day_offset, start_hour)
+            updated_slot["end_time"]   = _time_str(day_offset + alloc, start_hour)
             day_offset += alloc + alloc * break_ratio
 
             new_slots.append(updated_slot)
@@ -635,7 +715,7 @@ async def adapt_timetable(
 
     # ── Step 2 (D3): Day reallocation — swap worst <-> best performing day ───
     reassignment_log: list[str] = []
-    new_days = _swap_days(new_days, latest_progress, reassignment_log, swap_breadth=swap_breadth)
+    new_days = _swap_days(new_days, latest_progress, reassignment_log, swap_breadth=swap_breadth, start_hour=start_hour)
 
     # Stamp version into any reassignment_log entries that used a placeholder
     new_version = doc["version"] + 1

@@ -55,7 +55,7 @@ AVATAR_ALLOWED    = {"png", "jpg", "jpeg", "webp", "gif"}
 VALID_THEMES      = {"light", "dark"}
 VALID_NOTIF_EVENTS = {
     "account_created", "password_changed", "email_changed",
-    "day_sections_ready", "weekly_digest", "streak_reminder",
+    "day_sections_ready", "weekly_digest", "streak_reminder", "revision_due",
 }
 
 

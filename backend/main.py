@@ -15,6 +15,7 @@ from app.routers.twofa import router as twofa_router
 from app.routers.sessions import router as sessions_router
 from app.services.lifecycle import run_lifecycle_job
 from app.services.streaks import run_streak_nudge_job
+from app.services.model_retrain import retrain_classifier
 #from routes.chat import router as chat_router
 
 logger = logging.getLogger(__name__)
@@ -68,9 +69,22 @@ async def lifespan(app: FastAPI):
             id="streak_nudge",
             replace_existing=True,
         )
+        # Weekly classifier retrain -- heavier and far less time-sensitive
+        # than the daily jobs above, so it runs once a week rather than
+        # daily. Scheduled after the 02:00 lifecycle sweep to avoid
+        # overlapping Mongo load in the same low-traffic window.
+        scheduler.add_job(
+            retrain_classifier,
+            trigger="cron",
+            day_of_week="sun", hour=3, minute=0,
+            id="model_retrain",
+            replace_existing=True,
+            kwargs={"model_dir": settings.model_dir},
+        )
         scheduler.start()
         logger.info("[Startup] Note lifecycle scheduler started (daily at 02:00 UTC)")
         logger.info("[Startup] Streak nudge scheduler started (daily at 20:00 UTC)")
+        logger.info("[Startup] Classifier retrain scheduler started (weekly, Sunday 03:00 UTC)")
 
     # D5: Warn once at startup if SMTP is not configured
     if not settings.smtp_host:

@@ -22,10 +22,24 @@ def _score_band(score: float) -> str:
 # as a fast, confident answer, so hours aren't cut prematurely.
 SLOW_RESPONSE_THRESHOLD_PCT = 85.0
 
+# A high score paired with a *low* self-reported confidence average suggests
+# the student guessed their way to a good score rather than genuinely knowing
+# the material — response time alone can't catch this (a lucky guess can
+# still be fast). Cap the reward the same way a slow-but-correct answer is
+# capped, for the same reason: don't cut hours on content that isn't
+# confidently mastered yet.
+LOW_CONFIDENCE_THRESHOLD_PCT = 40.0
 
-def _reward(score: float, avg_response_time_pct: float | None = None) -> float:
+
+def _reward(
+    score: float,
+    avg_response_time_pct: float | None = None,
+    avg_confidence_pct: float | None = None,
+) -> float:
     if score >= 80:
         if avg_response_time_pct is not None and avg_response_time_pct >= SLOW_RESPONSE_THRESHOLD_PCT:
+            return 0.0
+        if avg_confidence_pct is not None and avg_confidence_pct < LOW_CONFIDENCE_THRESHOLD_PCT:
             return 0.0
         return 1.0
     if score >= 60: return 0.0
@@ -54,6 +68,7 @@ async def update_q_table(
     section_id: str,
     score: float,
     avg_response_time_pct: float | None = None,
+    avg_confidence_pct: float | None = None,
 ) -> str:
     """
     Update Q-values and return recommended action for next week.
@@ -65,7 +80,7 @@ async def update_q_table(
 
     band   = _score_band(score)
     q      = await get_q_values(user_id, section_id, band)
-    reward = _reward(score, avg_response_time_pct)
+    reward = _reward(score, avg_response_time_pct, avg_confidence_pct)
 
     # ── Epsilon-greedy action selection ──────────────────────────────────────
     if random.random() < EPSILON:

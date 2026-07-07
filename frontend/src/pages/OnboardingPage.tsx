@@ -281,7 +281,7 @@ export function OnboardingPage() {
           <h2 className="font-headline text-base font-bold text-on-background">Preferred Study Times</h2>
         </div>
         <p className="text-xs text-on-surface-variant">
-          When do you study best? Select all that apply. (Currently informational — used in future scheduling features.)
+          When do you study best? Select all that apply — your timetable's daily start time will be anchored to the earliest one you pick.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {VALID_STUDY_TIMES.map(t => {

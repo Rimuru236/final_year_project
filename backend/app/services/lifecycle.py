@@ -4,15 +4,30 @@ Note & Storage Lifecycle Management — Day 8.
 Implements a background APScheduler job that archives the bulk text content of
 old notes to prevent unbounded MongoDB storage growth.
 
-Lifecycle policy (documented in CHANGELOG D8-1):
+Lifecycle policy (documented in CHANGELOG D8-1; revision-nudge grace period
+added as a follow-up to reconcile this with spaced-repetition mastery decay):
   SCORED  archive: content cleared when the note hasn't been STUDIED in >= 30
                    days (per-user override: users.archive_after_days) AND its
                    best score >= 80%. Keyed off last study activity rather
                    than note creation date — a note the user keeps revisiting
                    isn't archived just because the note itself is old.
+
+                   Crossing this threshold no longer clears content
+                   immediately: it's exactly the "solid but aging" signal
+                   spaced repetition should use to resurface material for
+                   review, not delete it. Instead, one "revision_due"
+                   notification is sent and notes.revision_nudge_sent_at is
+                   stamped; the note is only actually archived if
+                   REVIEW_GRACE_DAYS pass with no further study activity. If
+                   the student studies the note again in the meantime,
+                   last_studied_at advances past the cutoff and the note
+                   drops out of archive-eligibility entirely until it ages
+                   past the threshold again (which resets the nudge).
   HARD    archive: content cleared unconditionally at 90 days since creation,
                    regardless of score or study activity (prevents indefinite
                    growth for notes never studied — a true storage ceiling).
+                   Not subject to the revision-nudge grace period — this is
+                   an unconditional ceiling by design.
 
 "Archive" means:
   - notes.raw_text → "" (nulled)
@@ -44,6 +59,14 @@ logger = logging.getLogger(__name__)
 SCORED_ARCHIVE_DAYS  = 30    # Archive if score >= SCORED_THRESHOLD and age >= 30 days
 SCORED_THRESHOLD_PCT = 80.0  # Minimum overall score to qualify for early archive
 HARD_ARCHIVE_DAYS    = 90    # Unconditional archive regardless of score
+
+# Spaced-repetition reconciliation: a note that just crossed the scored-archive
+# threshold is, by definition, exactly the "solid but aging" content spaced
+# repetition would want to resurface for review — not delete. Rather than
+# clearing it immediately, send one revision-due nudge and give the student
+# this many days to revisit it (which pushes last_studied_at forward and
+# pulls the note back out of archive-eligibility) before archiving for real.
+REVIEW_GRACE_DAYS = 7
 
 
 async def _get_note_progress_stats(note_id: str) -> tuple[float | None, datetime | None]:
@@ -113,6 +136,7 @@ async def run_lifecycle_job() -> dict:
     Returns a summary dict for logging (not exposed via API).
     """
     from app.core.database import notes_col, users_col
+    from app.services.notifications import notify_user
 
     now    = datetime.now(timezone.utc)
     cutoff_scored = now - timedelta(days=SCORED_ARCHIVE_DAYS)
@@ -126,11 +150,12 @@ async def run_lifecycle_job() -> dict:
     # Only process notes that have NOT already been archived
     candidates = await notes_col().find(
         {"content_archived": {"$ne": True}},
-        {"_id": 1, "created_at": 1, "user_id": 1},
+        {"_id": 1, "created_at": 1, "user_id": 1, "revision_nudge_sent_at": 1, "filename": 1, "subject": 1},
     ).to_list(5000)
 
     archived_scored = 0
     archived_hard   = 0
+    nudged          = 0
     skipped         = 0
 
     for note in candidates:
@@ -174,6 +199,48 @@ async def run_lifecycle_job() -> dict:
             and last_studied_at is not None
             and last_studied_at <= cutoff_scored_user
         ):
+            nudge_sent_at = note.get("revision_nudge_sent_at")
+            if nudge_sent_at and nudge_sent_at.tzinfo is None:
+                nudge_sent_at = nudge_sent_at.replace(tzinfo=timezone.utc)
+
+            # A nudge sent before the student's last study session is stale —
+            # they already came back once since then, so this is a fresh
+            # archive-eligibility window (they let it lapse again) rather
+            # than a continuation of the old grace period.
+            if nudge_sent_at and nudge_sent_at < last_studied_at:
+                nudge_sent_at = None
+
+            if nudge_sent_at is None:
+                # First time this note has crossed the scored-archive
+                # threshold (or has again, after a review reset it). Give
+                # the student one revision-due nudge and a grace window to
+                # act on it before content is actually cleared — spaced
+                # repetition should resurface aging-but-solid material, not
+                # silently delete the ability to re-quiz it.
+                await notes_col().update_one(
+                    {"_id": note["_id"]},
+                    {"$set": {"revision_nudge_sent_at": now}},
+                )
+                await notify_user(
+                    note["user_id"],
+                    "revision_due",
+                    {
+                        "note_id": note_id,
+                        "best_score": best_score,
+                        "subject": note.get("subject"),
+                        "filename": note.get("filename"),
+                    },
+                )
+                nudged += 1
+                skipped += 1
+                continue
+
+            if (now - nudge_sent_at).days < REVIEW_GRACE_DAYS:
+                # Still inside the grace window — give the nudge time to work.
+                skipped += 1
+                continue
+
+            # Grace period elapsed with no further review — archive now.
             await _archive_note(
                 note_id,
                 f"scored_archive_{scored_days}d_score{best_score:.0f}pct",
@@ -188,6 +255,7 @@ async def run_lifecycle_job() -> dict:
         "candidates":      len(candidates),
         "archived_hard":   archived_hard,
         "archived_scored": archived_scored,
+        "nudged_for_review": nudged,
         "skipped":         skipped,
     }
     logger.info("[Lifecycle] Job complete — %s", summary)

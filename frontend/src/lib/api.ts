@@ -173,6 +173,12 @@ export const timetableApi = {
   // Default 1 matches today's behavior exactly (no query string sent).
   adapt: (id: string, swapBreadth: number = 1) =>
     api(`/timetable/${id}/adapt${swapBreadth > 1 ? `?swap_breadth=${swapBreadth}` : ""}`, { method: "POST" }),
+
+  setGoal: (id: string, payload: { target_mastery_pct: number; deadline: string }) =>
+    api(`/timetable/${id}/goal`, { method: "PUT", body: JSON.stringify(payload) }),
+
+  clearGoal: (id: string) =>
+    api(`/timetable/${id}/goal`, { method: "DELETE" }),
 };
 
 export const mcqApi = {
@@ -196,6 +202,7 @@ export const progressApi = {
     questions_attempted: number;
     correct_answers: number;
     avg_response_time_pct?: number;
+    avg_confidence_pct?: number;
   }) =>
     api("/progress/submit", {
       method: "POST",

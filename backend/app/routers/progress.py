@@ -1,15 +1,16 @@
 import uuid
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from fastapi import APIRouter, HTTPException, Depends
 
 from ..core.database import progress_col, note_sections_col, timetables_col, notes_col
 from ..core.security import get_current_user
-from ..schemas import ProgressSubmit, WeeklyReport, SectionProgress, DayProgress, SectionMastery, MasteryReport
+from ..schemas import ProgressSubmit, WeeklyReport, SectionProgress, DayProgress, SectionMastery, MasteryReport, GoalForecast
 from ..services.rl_engine import update_q_table
 from ..services.notifications import notify_user
 from ..services.mastery import weighted_mastery_pct, DEFAULT_HALF_LIFE_DAYS
+from ..services.goal_forecast import project_goal_status
 
 # "Due for review" nudge: a solid section not attempted in this many days —
 # reuses the same half-life used to decay-weight mastery, since that's
@@ -64,16 +65,22 @@ async def submit_progress(body: ProgressSubmit, current: dict = Depends(get_curr
         "attempt_number":      count + 1,
         "date":                datetime.now(timezone.utc),
         "avg_response_time_pct": body.avg_response_time_pct,
+        "avg_confidence_pct": body.avg_confidence_pct,
     }
     await progress_col().insert_one(doc)
 
-    # RL update — response time (when available) tempers the reward so a
-    # correct-but-slow answer doesn't get treated the same as a confident one.
-    action = await update_q_table(user_id, body.section_id, body.score_pct, body.avg_response_time_pct)
+    # RL update — response time and self-reported confidence (when available)
+    # temper the reward so a correct-but-slow or correct-but-guessed answer
+    # doesn't get treated the same as a fast, confident one.
+    action = await update_q_table(
+        user_id, body.section_id, body.score_pct,
+        body.avg_response_time_pct, body.avg_confidence_pct,
+    )
 
     logger.info(
-        "[Progress] user=%s section=%s score=%.1f%% response_time=%s action=%s",
-        user_id, body.section_id, body.score_pct, body.avg_response_time_pct, action,
+        "[Progress] user=%s section=%s score=%.1f%% response_time=%s confidence=%s action=%s",
+        user_id, body.section_id, body.score_pct,
+        body.avg_response_time_pct, body.avg_confidence_pct, action,
     )
 
     return {
@@ -350,6 +357,30 @@ async def section_mastery(timetable_id: str, current: dict = Depends(get_current
         if day_slots  # skip empty days
     }
 
+    # 7b. Pacing forecast — only when a goal has been set on this timetable
+    # (PUT /timetable/{id}/goal). week_start is used as the tracking-start
+    # reference point for the linear-rate extrapolation.
+    goal_forecast = None
+    goal_mastery_pct = timetable.get("goal_mastery_pct")
+    goal_deadline_str = timetable.get("goal_deadline")
+    if goal_mastery_pct is not None and goal_deadline_str:
+        deadline = date.fromisoformat(goal_deadline_str)
+        tracking_start = date.fromisoformat(timetable["week_start"])
+        projection = project_goal_status(
+            overall_mastery_pct=overall_mastery_pct,
+            target_mastery_pct=goal_mastery_pct,
+            deadline=deadline,
+            tracking_start=tracking_start,
+            today=now.date(),
+        )
+        goal_forecast = GoalForecast(
+            target_mastery_pct=goal_mastery_pct,
+            deadline=deadline,
+            days_remaining=projection["days_remaining"],
+            projected_mastery_pct=projection["projected_mastery_pct"],
+            status=projection["status"],
+        )
+
     # 8. Return MasteryReport
     return MasteryReport(
         timetable_id=timetable_id,
@@ -360,5 +391,6 @@ async def section_mastery(timetable_id: str, current: dict = Depends(get_current
         total_sections=len(section_ids),
         overall_mastery_pct=overall_mastery_pct,
         sections_by_day=sections_by_day,
+        goal=goal_forecast,
         due_for_review=due_for_review,
     )

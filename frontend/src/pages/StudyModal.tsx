@@ -1,15 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Spinner } from "../components/UI";
 import type { StudySession } from "../types";
+import { CONFIDENCE_LEVELS } from "../types";
 
 interface StudyModalProps {
   session: StudySession;
   onClose: () => void;
   onStartQuiz: () => void;
   onSelectOption: (opt: string) => void;
-  // elapsedFraction: fraction (0-1) of timerSeconds used for this question,
-  // only passed when the timer is enabled. Undefined otherwise.
-  onSubmitAnswer: (elapsedFraction?: number) => void;
+  // confidence: 0-1 self-reported confidence for this question (see
+  // CONFIDENCE_LEVELS). elapsedFraction: fraction (0-1) of timerSeconds
+  // used for this question, only passed when the timer is enabled.
+  onSubmitAnswer: (confidence: number, elapsedFraction?: number) => void;
   onNextQuestion: () => Promise<void>;
   timerEnabled?: boolean;
   timerSeconds?: number;
@@ -26,6 +28,13 @@ export function StudyModal({
   const contentRef = useRef<HTMLDivElement>(null);
   const [readProgress, setReadProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+
+  // Confidence rating for the current question — reset each time a new
+  // question is shown so a stale rating can't carry over.
+  const [confidence, setConfidence] = useState<number | null>(null);
+  useEffect(() => { setConfidence(null); }, [quizIdx]);
+  const confidenceRef = useRef(confidence);
+  useEffect(() => { confidenceRef.current = confidence; }, [confidence]);
 
   // Timer state
   const [timeLeft, setTimeLeft] = useState(timerSeconds);
@@ -71,8 +80,9 @@ export function StudyModal({
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        if (!revealed && selected) onSubmitAnswer(timerEnabled ? (timerSeconds - timeLeftRef.current) / timerSeconds : undefined);
-        else if (revealed) handleNext();
+        if (!revealed && selected && confidenceRef.current !== null) {
+          onSubmitAnswer(confidenceRef.current, timerEnabled ? (timerSeconds - timeLeftRef.current) / timerSeconds : undefined);
+        } else if (revealed) handleNext();
       }
     };
     window.addEventListener("keydown", handler);
@@ -87,7 +97,9 @@ export function StudyModal({
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timerRef.current!);
-          onSubmitAnswer(1.0);   // auto-submit as wrong when time runs out — full time used
+          // Auto-submit when time runs out — full time used; fall back to
+          // "Guessing" if the student hadn't rated their confidence yet.
+          onSubmitAnswer(confidenceRef.current ?? 0, 1.0);
           return 0;
         }
         return prev - 1;
@@ -238,6 +250,30 @@ export function StudyModal({
                 })}
               </div>
 
+              {/* Confidence rating — required before submitting */}
+              {selected && !revealed && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wide">
+                    How confident are you?
+                  </p>
+                  <div className="flex gap-2">
+                    {CONFIDENCE_LEVELS.map(({ value, label }) => (
+                      <button
+                        key={label}
+                        onClick={() => setConfidence(value)}
+                        className={`flex-1 py-2.5 rounded-xl border text-xs font-bold transition-all ${
+                          confidence === value
+                            ? "border-primary bg-primary-container text-on-primary-container"
+                            : "border-outline-variant/30 bg-surface-container-low text-on-surface-variant hover:bg-surface-container"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Explanation */}
               {revealed && (
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl">
@@ -271,11 +307,11 @@ export function StudyModal({
 
           {mode === "quiz" && !revealed && (
             <button
-              onClick={() => onSubmitAnswer(timerEnabled ? (timerSeconds - timeLeft) / timerSeconds : undefined)}
-              disabled={!selected}
+              onClick={() => onSubmitAnswer(confidence ?? 0, timerEnabled ? (timerSeconds - timeLeft) / timerSeconds : undefined)}
+              disabled={!selected || confidence === null}
               className="w-full py-3.5 bg-primary text-on-primary rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
-              Submit Answer
+              {selected && confidence === null ? "Rate your confidence to continue" : "Submit Answer"}
             </button>
           )}
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, Any
-from datetime import datetime
+from datetime import datetime, date
 
 from app.core.validators import validate_password_complexity
 
@@ -183,6 +183,10 @@ class ProgressSubmit(BaseModel):
     # only sent when the quiz timer was enabled (Smart Drill timed mode).
     # None means no timing data — the RL reward falls back to score-only.
     avg_response_time_pct: Optional[float] = Field(None, ge=0, le=100)
+    # Average self-reported confidence (0-100, higher = more confident) across
+    # the quiz's answered questions. None means the student wasn't prompted
+    # (or skipped rating) — the RL reward falls back to score/timing only.
+    avg_confidence_pct: Optional[float] = Field(None, ge=0, le=100)
 
 
 class SectionProgress(BaseModel):
@@ -225,6 +229,22 @@ class SectionMastery(BaseModel):
     hours_allocated: float
 
 
+# ── Study Goal (pacing forecast) ───────────────────────────────────────────
+class StudyGoalRequest(BaseModel):
+    target_mastery_pct: float = Field(..., ge=1, le=100)
+    deadline: date
+
+
+class GoalForecast(BaseModel):
+    target_mastery_pct: float
+    deadline: date
+    days_remaining: int
+    # None when there isn't enough history yet to extrapolate a pace.
+    projected_mastery_pct: Optional[float] = None
+    # "goal_met" | "deadline_passed" | "not_enough_data" | "on_track" | "behind"
+    status: str
+
+
 class MasteryReport(BaseModel):
     timetable_id: str
     solid: list[SectionMastery]
@@ -240,6 +260,9 @@ class MasteryReport(BaseModel):
     # Solid sections not attempted in a while — a lightweight, opt-in "due for
     # review" nudge (subset of `solid`, not a fifth exclusive bucket).
     due_for_review: list[SectionMastery] = []
+    # Pacing forecast for a student-set mastery goal on this timetable.
+    # None when no goal has been set.
+    goal: Optional[GoalForecast] = None
 
 
 # ── Glossary (Feature 3) ───────────────────────────────────────────────────

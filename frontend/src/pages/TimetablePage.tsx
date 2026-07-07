@@ -27,11 +27,23 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
   const [drillMode, setDrillMode] = useState<"all" | "weak" | "shaky" | "review" | null>(null);
   const [drillTimerEnabled, setDrillTimerEnabled] = useState(false);
   const [mcqCount, setMcqCount] = useState(DEFAULT_MCQ_COUNT);
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [goalTarget, setGoalTarget] = useState(80);
+  const [goalDeadline, setGoalDeadline] = useState("");
+  const [savingGoal, setSavingGoal] = useState(false);
 
   useEffect(() => {
     settingsApi.getStudyPrefs()
       .then((prefs: StudyPrefs) => { if (prefs.default_mcq_count) setMcqCount(prefs.default_mcq_count); })
       .catch(() => { /* fall back to DEFAULT_MCQ_COUNT */ });
+  }, []);
+
+  const refreshMastery = useCallback((timetableId: string) => {
+    setLoadingMastery(true);
+    return progressApi.mastery(timetableId)
+      .then((r: MasteryReport) => setMasteryReport(r))
+      .catch(() => { /* mastery is non-critical — silently ignore */ })
+      .finally(() => setLoadingMastery(false));
   }, []);
 
   const load = useCallback(async () => {
@@ -47,20 +59,14 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
         // FIX: fetch full timetable (with section_content) by ID — list endpoint omits content
         const full: Timetable = await timetableApi.get(preferred.timetable_id);
         setSelected(full);
-
-        // Load mastery report alongside timetable
-        setLoadingMastery(true);
-        progressApi.mastery(preferred.timetable_id)
-          .then((r: MasteryReport) => setMasteryReport(r))
-          .catch(() => { /* mastery is non-critical — silently ignore */ })
-          .finally(() => setLoadingMastery(false));
+        refreshMastery(preferred.timetable_id);
       }
     } catch (err: any) {
       toast(err.message, "error");
     } finally {
       setLoading(false);
     }
-  }, [activeTimetableId, toast]);
+  }, [activeTimetableId, toast, refreshMastery]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -68,13 +74,33 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
     try {
       const full: Timetable = await timetableApi.get(tt.timetable_id);
       setSelected(full);
+      refreshMastery(tt.timetable_id);
+    } catch (err: any) {
+      toast(err.message, "error");
+    }
+  };
 
-      // Load mastery report for the newly selected timetable
-      setLoadingMastery(true);
-      progressApi.mastery(tt.timetable_id)
-        .then((r: MasteryReport) => setMasteryReport(r))
-        .catch(() => { /* mastery is non-critical — silently ignore */ })
-        .finally(() => setLoadingMastery(false));
+  const handleSaveGoal = async () => {
+    if (!selected || !goalDeadline) return;
+    setSavingGoal(true);
+    try {
+      await timetableApi.setGoal(selected.timetable_id, { target_mastery_pct: goalTarget, deadline: goalDeadline });
+      await refreshMastery(selected.timetable_id);
+      setEditingGoal(false);
+      toast("Goal saved", "success");
+    } catch (err: any) {
+      toast(err.message, "error");
+    } finally {
+      setSavingGoal(false);
+    }
+  };
+
+  const handleClearGoal = async () => {
+    if (!selected) return;
+    try {
+      await timetableApi.clearGoal(selected.timetable_id);
+      await refreshMastery(selected.timetable_id);
+      toast("Goal cleared", "info");
     } catch (err: any) {
       toast(err.message, "error");
     }
@@ -109,6 +135,7 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
       revealed: false,
       score: { correct: 0, total: 0 },
       responseTimeFractions: [],
+      confidenceRatings: [],
     });
   };
 
@@ -118,7 +145,7 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
     setSession((s) => s ? { ...s, mode: "quiz-loading" } : s);
     try {
       const mcqs: MCQ[] = await mcqApi.generate(session.slot.section_id, mcqCount);
-      setSession((s) => s ? { ...s, mode: "quiz", mcqs, quizIdx: 0, selected: null, revealed: false, score: { correct: 0, total: 0 }, responseTimeFractions: [] } : s);
+      setSession((s) => s ? { ...s, mode: "quiz", mcqs, quizIdx: 0, selected: null, revealed: false, score: { correct: 0, total: 0 }, responseTimeFractions: [], confidenceRatings: [] } : s);
     } catch (err: any) {
       toast(err.message, "error");
       setSession((s) => s ? { ...s, mode: "study" } : s);
@@ -129,7 +156,7 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
     setSession((s) => s ? { ...s, selected: opt } : s);
   };
 
-  const handleSubmitAnswer = (elapsedFraction?: number) => {
+  const handleSubmitAnswer = (confidence: number, elapsedFraction?: number) => {
     if (!session || !session.selected) return;
     const correct = session.mcqs[session.quizIdx]?.correct_answer === session.selected;
     setSession((s) =>
@@ -140,6 +167,7 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
         responseTimeFractions: elapsedFraction !== undefined
           ? [...s.responseTimeFractions, elapsedFraction]
           : s.responseTimeFractions,
+        confidenceRatings: [...s.confidenceRatings, confidence],
       } : s
     );
   };
@@ -157,6 +185,9 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
       const avg_response_time_pct = session.responseTimeFractions.length > 0
         ? (session.responseTimeFractions.reduce((a, b) => a + b, 0) / session.responseTimeFractions.length) * 100
         : undefined;
+      const avg_confidence_pct = session.confidenceRatings.length > 0
+        ? (session.confidenceRatings.reduce((a, b) => a + b, 0) / session.confidenceRatings.length) * 100
+        : undefined;
       try {
         await progressApi.submit({
           section_id: session.slot.section_id,
@@ -165,6 +196,7 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
           questions_attempted: total,
           correct_answers: correct,
           avg_response_time_pct,
+          avg_confidence_pct,
         });
         toast(`Quiz complete! Score: ${score_pct.toFixed(0)}%`, "success");
       } catch (err: any) {
@@ -243,6 +275,119 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
           </div>
         )}
       </div>
+
+      {/* Study Goal widget */}
+      {masteryReport && (
+        <div className="mt-4 p-4 bg-surface-container-low rounded-2xl space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-primary text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>flag</span>
+            <h3 className="font-headline text-sm font-bold text-on-background">Study Goal</h3>
+          </div>
+
+          {!editingGoal && masteryReport.goal && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm flex-wrap gap-2">
+                <span className="text-on-surface-variant">
+                  Target: <span className="font-bold text-on-surface">{masteryReport.goal.target_mastery_pct}%</span> by{" "}
+                  <span className="font-bold text-on-surface">
+                    {new Date(masteryReport.goal.deadline + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                  </span>
+                </span>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { setGoalTarget(masteryReport.goal!.target_mastery_pct); setGoalDeadline(masteryReport.goal!.deadline); setEditingGoal(true); }}
+                    className="text-xs font-semibold text-primary hover:underline"
+                  >
+                    Edit
+                  </button>
+                  <button onClick={handleClearGoal} className="text-xs font-semibold text-on-surface-variant hover:underline">
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="h-2 bg-surface-container-high rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    masteryReport.goal.status === "goal_met" ? "bg-emerald-500"
+                    : (masteryReport.goal.status === "behind" || masteryReport.goal.status === "deadline_passed") ? "bg-red-400"
+                    : "bg-primary"
+                  }`}
+                  style={{ width: `${Math.min(((masteryReport.overall_mastery_pct ?? 0) / masteryReport.goal.target_mastery_pct) * 100, 100)}%` }}
+                />
+              </div>
+
+              <p className={`text-xs font-semibold ${
+                masteryReport.goal.status === "goal_met" ? "text-emerald-600"
+                : masteryReport.goal.status === "on_track" ? "text-primary"
+                : masteryReport.goal.status === "not_enough_data" ? "text-on-surface-variant"
+                : "text-red-600"
+              }`}>
+                {masteryReport.goal.status === "goal_met" &&
+                  `🎉 Goal met! You're at ${(masteryReport.overall_mastery_pct ?? 0).toFixed(0)}%.`}
+                {masteryReport.goal.status === "deadline_passed" &&
+                  `⏳ Deadline passed at ${(masteryReport.overall_mastery_pct ?? 0).toFixed(0)}% (target was ${masteryReport.goal.target_mastery_pct}%).`}
+                {masteryReport.goal.status === "not_enough_data" &&
+                  `📊 Tracking started — check back in a day or two for a pacing forecast.`}
+                {masteryReport.goal.status === "on_track" &&
+                  `✅ On track — projected ${masteryReport.goal.projected_mastery_pct}% by your deadline (${masteryReport.goal.days_remaining} day${masteryReport.goal.days_remaining === 1 ? "" : "s"} left).`}
+                {masteryReport.goal.status === "behind" &&
+                  `⚠️ Behind pace — projected only ${masteryReport.goal.projected_mastery_pct}% by your deadline. Consider more study time.`}
+              </p>
+            </div>
+          )}
+
+          {!editingGoal && !masteryReport.goal && (
+            <button
+              onClick={() => { setGoalTarget(80); setGoalDeadline(""); setEditingGoal(true); }}
+              className="w-full py-2.5 bg-primary-container/40 text-on-primary-container rounded-xl font-bold text-xs hover:bg-primary-container/60 transition-all"
+            >
+              + Set a mastery goal
+            </button>
+          )}
+
+          {editingGoal && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-semibold text-on-surface-variant w-20 flex-shrink-0">Target %</label>
+                <input
+                  type="range" min={10} max={100} step={5}
+                  value={goalTarget}
+                  onChange={(e) => setGoalTarget(Number(e.target.value))}
+                  className="flex-1 h-2 bg-surface-container-high rounded-full appearance-none cursor-pointer accent-primary"
+                />
+                <span className="text-sm font-bold text-primary w-10 text-right">{goalTarget}%</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-semibold text-on-surface-variant w-20 flex-shrink-0">Deadline</label>
+                <input
+                  type="date"
+                  value={goalDeadline}
+                  min={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setGoalDeadline(e.target.value)}
+                  className="flex-1 px-3 py-2 bg-surface-container-low border border-outline-variant/30 rounded-xl text-sm"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setEditingGoal(false)}
+                  className="flex-1 py-2.5 text-sm font-semibold text-on-surface-variant border border-outline-variant/30 rounded-xl hover:bg-surface-container transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveGoal}
+                  disabled={!goalDeadline || savingGoal}
+                  className="flex-1 py-2.5 bg-primary text-on-primary rounded-xl font-bold text-sm disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                >
+                  {savingGoal ? <Spinner size={16} /> : null}
+                  Save Goal
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Smart Drill panel */}
       {masteryReport && masteryReport.total_sections >= 2 && (
