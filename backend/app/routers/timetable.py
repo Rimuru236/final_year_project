@@ -352,6 +352,7 @@ async def get_timetable(
             start_time=s.get("start_time", "00:00"),
             end_time=s.get("end_time", "00:00"),
             break_minutes=s.get("break_minutes", 0),
+            moved_from=s.get("moved_from"),
         ) for s in slots]
         for d, slots in doc["days"].items()
     }

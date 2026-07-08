@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Spinner, Card, Badge, Toggle } from "../components/UI";
+import { Spinner, Badge, Toggle } from "../components/UI";
 import { useToast } from "../lib/contexts";
-import { timetableApi, mcqApi, progressApi, settingsApi } from "../lib/api";
+import { timetableApi, mcqApi, progressApi, settingsApi, notesApi } from "../lib/api";
 import { StudyModal } from "./StudyModal";
-import type { Page, Timetable, TimetableSlot, MCQ, StudySession, MasteryReport, StudyPrefs } from "../types";
+import type { Page, Timetable, TimetableSlot, MCQ, StudySession, MasteryReport, StudyPrefs, Note } from "../types";
 
 const DEFAULT_MCQ_COUNT = 5;
 
@@ -13,6 +13,38 @@ interface TimetablePageProps {
 }
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+// Keyword → icon mapping so each subject card gets a recognizable glyph, mirroring time.html's per-subject icons.
+const SUBJECT_ICON_RULES: [RegExp, string][] = [
+  [/calc|math|algebra|integral|deriv|geometry|statistic/i, "calculate"],
+  [/physi|chem|bio|science/i, "science"],
+  [/language|linguist|english|grammar|vocab|literat/i, "language"],
+  [/code|program|data structure|algorithm|software|develop/i, "code"],
+  [/quiz|exam|test/i, "quiz"],
+  [/histor/i, "history_edu"],
+  [/psych|cognit|\bai\b|artificial intelligence|neuro/i, "psychology"],
+];
+
+function getSubjectIcon(title: string): string {
+  for (const [pattern, icon] of SUBJECT_ICON_RULES) {
+    if (pattern.test(title)) return icon;
+  }
+  return "menu_book";
+}
+
+// Uploaded-note filename -> clean display title (strip extension), e.g. "calculus_ii.pdf" -> "calculus_ii"
+function getNoteDisplayName(note: Note | undefined): string {
+  if (!note) return "Uploaded Note";
+  return note.filename.replace(/\.[^/.]+$/, "");
+}
+
+// Rotating accent per slot so a day's cards read as distinct subjects at a glance, not a uniform stack.
+const SLOT_ACCENTS = [
+  { card: "bg-primary text-on-primary", pill: "bg-white/20 text-on-primary", subtext: "text-on-primary/75", icon: "text-on-primary/80" },
+  { card: "bg-tertiary text-on-tertiary", pill: "bg-white/20 text-on-tertiary", subtext: "text-on-tertiary/75", icon: "text-on-tertiary/80" },
+  { card: "bg-secondary text-on-secondary", pill: "bg-white/20 text-on-secondary", subtext: "text-on-secondary/75", icon: "text-on-secondary/80" },
+  { card: "bg-surface-container-lowest text-on-surface border border-outline-variant/20", pill: "bg-surface-container text-on-surface-variant", subtext: "text-on-surface-variant", icon: "text-primary" },
+];
 
 export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePageProps) {
   const toast = useToast();
@@ -27,6 +59,10 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
   const [drillMode, setDrillMode] = useState<"all" | "weak" | "shaky" | "review" | null>(null);
   const [drillTimerEnabled, setDrillTimerEnabled] = useState(false);
   const [mcqCount, setMcqCount] = useState(DEFAULT_MCQ_COUNT);
+  const [showMasteryBreakdown, setShowMasteryBreakdown] = useState(false);
+  const [showDrillActions, setShowDrillActions] = useState(false);
+  const [expandedNoteGroups, setExpandedNoteGroups] = useState<Set<string>>(new Set());
+  const [notesById, setNotesById] = useState<Record<string, Note>>({});
   const [editingGoal, setEditingGoal] = useState(false);
   const [goalTarget, setGoalTarget] = useState(80);
   const [goalDeadline, setGoalDeadline] = useState("");
@@ -36,6 +72,16 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
     settingsApi.getStudyPrefs()
       .then((prefs: StudyPrefs) => { if (prefs.default_mcq_count) setMcqCount(prefs.default_mcq_count); })
       .catch(() => { /* fall back to DEFAULT_MCQ_COUNT */ });
+  }, []);
+
+  useEffect(() => {
+    notesApi.list()
+      .then((list: Note[]) => {
+        const map: Record<string, Note> = {};
+        for (const n of list) map[n.note_id] = n;
+        setNotesById(map);
+      })
+      .catch(() => { /* note titles are non-critical — falls back to "Uploaded Note" */ });
   }, []);
 
   const refreshMastery = useCallback((timetableId: string) => {
@@ -119,6 +165,14 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
     } finally {
       setAdapting(false);
     }
+  };
+
+  const toggleNoteGroup = (day: string) => {
+    setExpandedNoteGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day); else next.add(day);
+      return next;
+    });
   };
 
   // Open study session for a slot
@@ -402,66 +456,88 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
             )}
           </div>
 
-          {/* Mastery summary chips */}
-          <div className="flex flex-wrap gap-2">
-            {masteryReport.solid.length > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                🟢 {masteryReport.solid.length} solid
-              </span>
-            )}
-            {masteryReport.shaky.length > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                🟡 {masteryReport.shaky.length} shaky
-              </span>
-            )}
-            {masteryReport.revise.length > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
-                🔴 {masteryReport.revise.length} need revision
-              </span>
-            )}
-            {masteryReport.untouched.length > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-surface-container text-on-surface-variant border border-outline-variant/20">
-                ⬜ {masteryReport.untouched.length} untouched
-              </span>
-            )}
-            {masteryReport.due_for_review.length > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                🔵 {masteryReport.due_for_review.length} due for review
-              </span>
-            )}
-          </div>
+          {/* Mastery summary chips — collapsed by default to keep the panel from feeling packed */}
+          <button
+            onClick={() => setShowMasteryBreakdown((v) => !v)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-container border border-outline-variant/20 text-on-surface rounded-full text-xs font-semibold hover:bg-surface-container-high transition-all"
+          >
+            <span className="material-symbols-outlined text-base">
+              {showMasteryBreakdown ? "expand_less" : "expand_more"}
+            </span>
+            {showMasteryBreakdown ? "Hide" : "Show"} mastery breakdown
+          </button>
+          {showMasteryBreakdown && (
+            <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+              {masteryReport.solid.length > 0 && (
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  🟢 {masteryReport.solid.length} solid
+                </span>
+              )}
+              {masteryReport.shaky.length > 0 && (
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                  🟡 {masteryReport.shaky.length} shaky
+                </span>
+              )}
+              {masteryReport.revise.length > 0 && (
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
+                  🔴 {masteryReport.revise.length} need revision
+                </span>
+              )}
+              {masteryReport.untouched.length > 0 && (
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-surface-container text-on-surface-variant border border-outline-variant/20">
+                  ⬜ {masteryReport.untouched.length} untouched
+                </span>
+              )}
+              {masteryReport.due_for_review.length > 0 && (
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  🔵 {masteryReport.due_for_review.length} due for review
+                </span>
+              )}
+            </div>
+          )}
 
-          {/* Drill buttons */}
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => { setDrillMode("weak"); setDrillTimerEnabled(false); }}
-              disabled={masteryReport.revise.length === 0}
-              className="px-4 py-2 bg-red-50 text-red-700 border border-red-200 rounded-full text-xs font-bold hover:bg-red-100 disabled:opacity-40 transition-all"
-            >
-              Drill Weak Topics
-            </button>
-            <button
-              onClick={() => { setDrillMode("shaky"); setDrillTimerEnabled(false); }}
-              disabled={masteryReport.shaky.length === 0}
-              className="px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-xs font-bold hover:bg-amber-100 disabled:opacity-40 transition-all"
-            >
-              Drill Shaky Topics
-            </button>
-            <button
-              onClick={() => { setDrillMode("review"); setDrillTimerEnabled(false); }}
-              disabled={masteryReport.due_for_review.length === 0}
-              title="Solid topics you haven't revisited in a while — a light refresher before they fade"
-              className="px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-xs font-bold hover:bg-blue-100 disabled:opacity-40 transition-all"
-            >
-              Review Solid Topics
-            </button>
-            <button
-              onClick={() => { setDrillMode("all"); setDrillTimerEnabled(false); }}
-              className="px-4 py-2 bg-surface-container text-on-surface border border-outline-variant/20 rounded-full text-xs font-bold hover:bg-surface-container-high transition-all"
-            >
-              Practice All
-            </button>
-          </div>
+          {/* Drill buttons — collapsed by default; toggle reveals them in one straight horizontal row */}
+          <button
+            onClick={() => setShowDrillActions((v) => !v)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-surface-container border border-outline-variant/20 text-on-surface rounded-full text-xs font-semibold hover:bg-surface-container-high transition-all"
+          >
+            <span className="material-symbols-outlined text-base">
+              {showDrillActions ? "expand_less" : "expand_more"}
+            </span>
+            {showDrillActions ? "Hide" : "Show"} drill options
+          </button>
+          {showDrillActions && (
+            <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+              <button
+                onClick={() => { setDrillMode("weak"); setDrillTimerEnabled(false); }}
+                disabled={masteryReport.revise.length === 0}
+                className="flex-shrink-0 px-4 py-2 bg-red-50 text-red-700 border border-red-200 rounded-full text-xs font-bold hover:bg-red-100 disabled:opacity-40 transition-all"
+              >
+                Drill Weak Topics
+              </button>
+              <button
+                onClick={() => { setDrillMode("shaky"); setDrillTimerEnabled(false); }}
+                disabled={masteryReport.shaky.length === 0}
+                className="flex-shrink-0 px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-xs font-bold hover:bg-amber-100 disabled:opacity-40 transition-all"
+              >
+                Drill Shaky Topics
+              </button>
+              <button
+                onClick={() => { setDrillMode("review"); setDrillTimerEnabled(false); }}
+                disabled={masteryReport.due_for_review.length === 0}
+                title="Solid topics you haven't revisited in a while — a light refresher before they fade"
+                className="flex-shrink-0 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-xs font-bold hover:bg-blue-100 disabled:opacity-40 transition-all"
+              >
+                Review Solid Topics
+              </button>
+              <button
+                onClick={() => { setDrillMode("all"); setDrillTimerEnabled(false); }}
+                className="flex-shrink-0 px-4 py-2 bg-surface-container text-on-surface border border-outline-variant/20 rounded-full text-xs font-bold hover:bg-surface-container-high transition-all"
+              >
+                Practice All
+              </button>
+            </div>
+          )}
 
           {/* Timer toggle */}
           <div className="flex items-center gap-3 pt-1">
@@ -490,62 +566,121 @@ export function TimetablePage({ activeTimetableId, onNavigate }: TimetablePagePr
         </div>
       )}
 
-      {/* Weekly grid */}
+      {/* Weekly grid — days arranged in one horizontal row (mirrors time.html's bento layout);
+          each day always shows its uploaded-note container directly beneath it, which itself
+          expands to reveal that note's sections when tapped */}
       {selected && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 pb-4">
           {DAYS.map((day) => {
             const slots: TimetableSlot[] = selected.days[day] ?? [];
+            const isNoteGroupExpanded = expandedNoteGroups.has(day);
+            const noteName = getNoteDisplayName(notesById[selected.note_id]);
             return (
-              <div key={day} className="space-y-2">
-                <div className="flex items-center gap-2 px-1">
-                  <h3 className="font-headline text-sm font-bold text-on-surface">{day}</h3>
-                  {slots.length > 0 && (
-                    <Badge variant="primary">{slots.length} {slots.length === 1 ? "slot" : "slots"}</Badge>
+              <div key={day} className="flex flex-col gap-2">
+                <div className="flex flex-col items-center gap-1.5 p-3 rounded-2xl text-center bg-surface-container-low">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-outline">
+                    {day.slice(0, 3)}
+                  </p>
+                  {slots.length === 0 && (
+                    <span className="text-[10px] font-semibold text-outline">Rest day</span>
                   )}
                 </div>
+
                 {slots.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-outline-variant/30 p-4 text-center">
-                    <span className="text-xs text-outline">Rest day</span>
+                  <div className="rounded-3xl border-2 border-dashed border-outline-variant/30 p-6 min-h-[100px] flex items-center justify-center bg-surface-container-low/40">
+                    <span className="text-[10px] text-outline font-bold tracking-widest uppercase">Rest day</span>
                   </div>
                 ) : (
-                  slots.map((slot) => {
-                    // Check if slot matches current drill mode
-                    let isMatched = true;
-                    if (drillMode === "weak" && masteryReport) {
-                      isMatched = masteryReport.revise.some(s => s.section_id === slot.section_id);
-                    }
-                    if (drillMode === "shaky" && masteryReport) {
-                      isMatched = masteryReport.shaky.some(s => s.section_id === slot.section_id);
-                    }
-                    if (drillMode === "review" && masteryReport) {
-                      isMatched = masteryReport.due_for_review.some(s => s.section_id === slot.section_id);
-                    }
+                  <div className="space-y-2">
+                    {/* Uploaded-note container — always shown directly under the day, no need to open the day itself;
+                        clicking it toggles the note's sections open/closed. */}
+                    <button
+                      onClick={() => toggleNoteGroup(day)}
+                      className={`w-full p-4 rounded-3xl min-h-[84px] flex flex-col justify-between text-left transition-all duration-200 ${
+                        isNoteGroupExpanded
+                          ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20"
+                          : "bg-surface-container-lowest border border-outline-variant/10 hover:bg-slate-50 hover:-translate-y-0.5"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <span
+                          className={`material-symbols-outlined text-xl ${isNoteGroupExpanded ? "text-indigo-200" : "text-primary"}`}
+                          style={{ fontVariationSettings: "'FILL' 1" }}
+                        >
+                          {getSubjectIcon(noteName)}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-1 rounded-full flex-shrink-0 ${isNoteGroupExpanded ? "bg-white/20 text-white" : "bg-surface-container text-on-surface-variant"}`}>
+                          {slots.length} {slots.length === 1 ? "section" : "sections"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-bold text-sm leading-tight truncate">{noteName}</p>
+                        <span className={`material-symbols-outlined text-base flex-shrink-0 ${isNoteGroupExpanded ? "text-white" : "text-outline"}`}>
+                          {isNoteGroupExpanded ? "expand_less" : "expand_more"}
+                        </span>
+                      </div>
+                    </button>
 
-                    return (
-                      <Card
-                        key={slot.section_id}
-                        hoverable={isMatched}
-                        onClick={() => isMatched && openSlot(slot)}
-                        className={`p-4 ${!isMatched && drillMode ? "opacity-40 cursor-not-allowed" : ""}`}
-                      >
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <p className="font-semibold text-sm text-on-surface leading-tight line-clamp-2 flex-1 min-w-0">{slot.section_title}</p>
-                          <span className="material-symbols-outlined text-lg text-primary flex-shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>play_circle</span>
-                        </div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant="neutral">{slot.start_time} – {slot.end_time}</Badge>
-                          <Badge variant="primary">{slot.hours_allocated}h</Badge>
-                          {slot.break_minutes > 0 && <Badge variant="secondary">{slot.break_minutes}m break</Badge>}
-                          {slot.moved_from && (
-                            <Badge variant="error">
-                              <span className="material-symbols-outlined text-xs" style={{ fontVariationSettings: "'FILL' 1" }}>swap_horiz</span>
-                              {" "}Moved from {slot.moved_from}
-                            </Badge>
-                          )}
-                        </div>
-                      </Card>
-                    );
-                  })
+                    {isNoteGroupExpanded && (
+                      <div className="space-y-2 pl-2 border-l-2 border-outline-variant/20">
+                        {slots.map((slot, idx) => {
+                        // Check if slot matches current drill mode
+                        let isMatched = true;
+                        if (drillMode === "weak" && masteryReport) {
+                          isMatched = masteryReport.revise.some(s => s.section_id === slot.section_id);
+                        }
+                        if (drillMode === "shaky" && masteryReport) {
+                          isMatched = masteryReport.shaky.some(s => s.section_id === slot.section_id);
+                        }
+                        if (drillMode === "review" && masteryReport) {
+                          isMatched = masteryReport.due_for_review.some(s => s.section_id === slot.section_id);
+                        }
+
+                        const accent = SLOT_ACCENTS[idx % SLOT_ACCENTS.length];
+
+                        return (
+                          <div
+                            key={slot.section_id}
+                            onClick={() => isMatched && openSlot(slot)}
+                            className={`p-4 rounded-3xl min-h-[132px] flex flex-col justify-between transition-all duration-200 ${accent.card} ${
+                              isMatched ? "cursor-pointer hover:-translate-y-1 hover:shadow-xl" : ""
+                            } ${!isMatched && drillMode ? "opacity-40 cursor-not-allowed" : ""}`}
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <span className={`material-symbols-outlined text-xl ${accent.icon}`} style={{ fontVariationSettings: "'FILL' 1" }}>
+                                  {getSubjectIcon(slot.section_title)}
+                                </span>
+                                <span className={`text-[10px] font-bold px-2 py-1 rounded-full flex-shrink-0 ${accent.pill}`}>
+                                  {slot.hours_allocated}h
+                                </span>
+                              </div>
+                              <p className="font-bold text-sm leading-tight line-clamp-2">{slot.section_title}</p>
+                            </div>
+                            <div className="mt-2 space-y-1.5">
+                              <p className={`text-[10px] font-medium ${accent.subtext}`}>{slot.start_time} – {slot.end_time}</p>
+                              {(slot.break_minutes > 0 || slot.moved_from) && (
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {slot.break_minutes > 0 && (
+                                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${accent.pill}`}>
+                                      {slot.break_minutes}m break
+                                    </span>
+                                  )}
+                                  {slot.moved_from && (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500 text-white flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-[10px]" style={{ fontVariationSettings: "'FILL' 1" }}>swap_horiz</span>
+                                      Moved from {slot.moved_from}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             );
